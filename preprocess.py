@@ -1,7 +1,22 @@
 import pandas as pd
 from sklearn.preprocessing import StandardScaler, LabelEncoder
-
+import decimal
 def preprocess_data(df, is_train=True, scaler=None):
+    """
+    Tiền xử lý dữ liệu: lọc, xử lý cột, mã hóa, chuẩn hóa.
+    
+    Args:
+        df (pd.DataFrame): Dữ liệu đầu vào.
+        is_train (bool): True nếu là dữ liệu huấn luyện, False nếu là dữ liệu dự đoán.
+        scaler (StandardScaler): Scaler đã được huấn luyện (chỉ dùng khi is_train=False).
+    
+    Returns:
+        tuple: (X_scaled, y, scaler, encoders) nếu is_train=True.
+               (X_scaled, df_master, encoders) nếu is_train=False.
+    """
+    # Chuyển đổi các giá trị kiểu decimal.Decimal thành float (nếu có)
+    df = convert_decimal_to_float(df)
+
     # Lọc dữ liệu cơ bản
     df = filter_basic_conditions(df)
 
@@ -16,14 +31,14 @@ def preprocess_data(df, is_train=True, scaler=None):
     # Tạo nhóm tuổi và lọc dữ liệu theo tuổi
     df = process_age_column(df)
 
-    # Ghi lại master_account để dùng khi predict
+    # Ghi lại master_account để dùng khi dự đoán
     df_master = df.pop("master_account") if "master_account" in df.columns else None
 
-    # Xử lý các cột kiểu object bằng LabelEncoder
+    # Mã hóa các cột kiểu object bằng LabelEncoder
     encoders = {}
     df, encoders = encode_object_columns(df, encoders)
 
-    # Chuẩn hóa dữ liệu 
+    # Chuẩn hóa dữ liệu
     if is_train:
         y = df.pop("is_inactive").values
         scaler = StandardScaler()
@@ -36,31 +51,26 @@ def preprocess_data(df, is_train=True, scaler=None):
         return X_scaled, df_master, encoders
 
 
-# Các hàm xử lý riêng biệt
+def convert_decimal_to_float(df):
+    """Chuyển đổi các giá trị kiểu decimal.Decimal thành float."""
+    for col in df.select_dtypes(include=['object', 'decimal']).columns:
+        df[col] = df[col].apply(lambda x: float(x) if isinstance(x, decimal.Decimal) else x)
+    return df
+
+
 def filter_basic_conditions(df):
     """Lọc dữ liệu cơ bản."""
-    df = df[df['open_time'] >= 0]
-    df = df[df['customer_category'] == 1]
-    return df
+    return df[(df['open_time'] >= 0) & (df['customer_category'] == 1)]
 
 
 def process_gender_column(df):
     """Xử lý cột gender."""
-    if "gender" in df.columns:
-        df["gender"] = df["gender"].apply(lambda val: -999 if pd.isnull(val) or val == "unknown" else (0 if val == "F" else (1 if val == "M" else -999)))
-    return df
+    return process_column_with_unknown(df, "gender", mapping={"F": 0, "M": 1}, default=-999)
 
 
 def process_channel_column(df):
     """Xử lý cột channel."""
-    if "channel" in df.columns:
-        df["channel"] = (
-            df["channel"]
-            .replace({"unknown": -999, "nan": -999})
-            .fillna(-999)
-            .astype(str)
-        )
-    return df
+    return process_column_with_unknown(df, "channel", default=-999)
 
 
 def process_special_columns(df):
@@ -81,9 +91,12 @@ def process_last_trading_date(df):
     """Xử lý cột last_trading_date."""
     if "last_trading_date" in df.columns:
         df['last_trading_date'] = pd.to_datetime(df['last_trading_date'], errors='coerce')
-        df['last_trading_year'] = df['last_trading_date'].dt.year.fillna(-999).astype(int)
-        df['last_trading_month'] = df['last_trading_date'].dt.month.fillna(-999).astype(int)
-        df['last_trading_day'] = df['last_trading_date'].dt.day.fillna(-999).astype(int)
+        new_columns = pd.DataFrame({
+            'last_trading_year': df['last_trading_date'].dt.year.fillna(-999).astype(int),
+            'last_trading_month': df['last_trading_date'].dt.month.fillna(-999).astype(int),
+            'last_trading_day': df['last_trading_date'].dt.day.fillna(-999).astype(int)
+        })
+        df = pd.concat([df, new_columns], axis=1)
         df.drop(columns=['last_trading_date'], inplace=True)
     return df
 
@@ -107,3 +120,13 @@ def encode_object_columns(df, encoders):
         df[column] = label_encoder.fit_transform(df[column])
         encoders[column] = label_encoder
     return df, encoders
+
+
+def process_column_with_unknown(df, column, mapping=None, default=-999):
+    """Xử lý cột với giá trị 'unknown' hoặc NaN."""
+    if column in df.columns:
+        if mapping:
+            df[column] = df[column].apply(lambda x: mapping.get(x, default) if pd.notnull(x) else default)
+        else:
+            df[column] = df[column].apply(lambda x: default if pd.isnull(x) or x == "unknown" else x)
+    return df
